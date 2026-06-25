@@ -65,7 +65,7 @@ tasks.register("pushToGithub") {
 
     println("=== COMMIT CHANGES ===")
     try {
-      runCmd("git", "commit", "-m", "Upload compiled app-debug.apk v1.2 (versionCode 3)")
+      runCmd("git", "commit", "-m", "Fix Rapido Captain accept button clicking and add customizable target package field")
     } catch (e: Exception) {
       println("Commit might have failed or nothing to commit: ${e.message}")
     }

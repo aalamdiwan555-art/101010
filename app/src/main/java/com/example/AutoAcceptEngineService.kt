@@ -125,8 +125,12 @@ class AutoAcceptEngineService : AccessibilityService() {
         if (!isEngineRunning) return
 
         // Target Rapido Captain app
+        val prefs = getSharedPreferences("DrClickerPrefs", Context.MODE_PRIVATE)
+        val targetPkg = prefs.getString("target_package", "com.rapido.partner")?.trim() ?: "com.rapido.partner"
+        val actualTarget = if (targetPkg.isBlank()) "com.rapido.partner" else targetPkg
+
         val pkg = event.packageName?.toString() ?: ""
-        if (pkg == "com.rapido.rider") {
+        if (pkg == actualTarget || pkg == "com.rapido.partner" || pkg == "com.rapido.rider") {
             val now = System.currentTimeMillis()
             // Throttle screenshot captures to prevent freezing
             if (now - lastScreenshotTime > 400L) {

@@ -32,6 +32,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var tvEngineStatus: TextView
     private lateinit var switchEngine: SwitchCompat
+    private lateinit var etTargetPackage: TextInputEditText
     private lateinit var etMinPrice: TextInputEditText
     private lateinit var etMaxPrice: TextInputEditText
     private lateinit var etMinPickup: TextInputEditText
@@ -105,6 +106,7 @@ class MainActivity : AppCompatActivity() {
         // Bind Views
         tvEngineStatus = findViewById(R.id.tv_engine_status)
         switchEngine = findViewById(R.id.switch_engine)
+        etTargetPackage = findViewById(R.id.et_target_package)
         etMinPrice = findViewById(R.id.et_min_price)
         etMaxPrice = findViewById(R.id.et_max_price)
         etMinPickup = findViewById(R.id.et_min_pickup)
@@ -185,6 +187,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadSavedInputs() {
+        etTargetPackage.setText(prefs.getString("target_package", "com.rapido.partner"))
         etMinPrice.setText(prefs.getString("min_price", ""))
         etMaxPrice.setText(prefs.getString("max_price", ""))
         etMinPickup.setText(prefs.getString("min_pickup", ""))
@@ -196,6 +199,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupInputWatchers() {
+        etTargetPackage.addTextChangedListener(SimpleTextWatcher { s ->
+            prefs.edit().putString("target_package", s).apply()
+        })
         etMinPrice.addTextChangedListener(SimpleTextWatcher { s ->
             prefs.edit().putString("min_price", s).apply()
         })
