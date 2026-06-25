@@ -258,6 +258,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openAccessibilitySettings() {
+        Toast.makeText(
+            this,
+            "⚠️ If service is grayed out, go to App Info -> 3 Dots -> 'Allow restricted settings'",
+            Toast.LENGTH_LONG
+        ).show()
+
         val serviceComponent = ComponentName(packageName, AutoAcceptEngineService::class.java.name).flattenToString()
         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
             // Android standard extras

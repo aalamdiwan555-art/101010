@@ -6,6 +6,5 @@
     android:canPerformGestures="true"
     android:canRetrieveWindowContent="true"
     android:canTakeScreenshot="true"
-    android:packageNames="com.rapido.rider"
     android:notificationTimeout="50"
     android:description="@string/accessibility_service_description" />
