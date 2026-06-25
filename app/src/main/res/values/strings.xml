@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Dr. Clicker</string>
+    <string name="accessibility_service_label">Dr. Clicker Auto-Clicker Service</string>
+    <string name="accessibility_service_description">Automates tap actions on buttons to assist with fast reactions.</string>
+</resources>

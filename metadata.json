@@ -1,0 +1,6 @@
+{
+  "name": "Dr. Clicker",
+  "description": "Localized workflow diagnostics, UI layout calibration, and touch-latency testing utility.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
