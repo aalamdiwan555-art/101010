@@ -65,7 +65,7 @@ tasks.register("pushToGithub") {
 
     println("=== COMMIT CHANGES ===")
     try {
-      runCmd("git", "commit", "-m", "Update version to 1.2 (versionCode 3) and fix Room/KSP build compatibility")
+      runCmd("git", "commit", "-m", "Upload compiled app-debug.apk v1.2 (versionCode 3)")
     } catch (e: Exception) {
       println("Commit might have failed or nothing to commit: ${e.message}")
     }
