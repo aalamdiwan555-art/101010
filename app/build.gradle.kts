@@ -129,4 +129,7 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
+  // Embedded native OpenCV library is utilized locally via /app/src/main/java/org/opencv
+  // to achieve 100% offline compilation and zero network dependencies.
+  // implementation(libs.opencv.android)
 }

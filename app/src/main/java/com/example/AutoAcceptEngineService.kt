@@ -2,19 +2,30 @@ package com.example
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Path
+import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
 import android.media.AudioManager
+import android.media.ImageReader
 import android.media.ToneGenerator
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Display
 import android.view.ViewConfiguration
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.annotation.RequiresApi
@@ -46,6 +57,16 @@ class AutoAcceptEngineService : AccessibilityService() {
     private var templateMat: Mat? = null
     private var consecutiveMatchEventsCount = 0
 
+    // MediaProjection variables
+    private var mediaProjection: MediaProjection? = null
+    private var virtualDisplay: VirtualDisplay? = null
+    private var imageReader: ImageReader? = null
+    private var projectionHandler: Handler? = null
+    private var projectionThread: android.os.HandlerThread? = null
+
+    private val CHANNEL_ID = "DrClickerChannel"
+    private val NOTIFICATION_ID = 9999
+
     companion object {
         var instance: AutoAcceptEngineService? = null
             private set
@@ -64,7 +85,6 @@ class AutoAcceptEngineService : AccessibilityService() {
             Log.e("AutoAcceptEngine", "OpenCV initialization failed")
         }
 
-        // Read active state from prefs
         val prefs = getSharedPreferences("DrClickerPrefs", Context.MODE_PRIVATE)
         isEngineRunning = prefs.getBoolean("engine_active", false)
         if (isEngineRunning) {
@@ -100,7 +120,6 @@ class AutoAcceptEngineService : AccessibilityService() {
                         val mat = Mat()
                         Utils.bitmapToMat(bitmap, mat)
                         
-                        // Grayscale convert and cache this template:
                         val grayMat = Mat()
                         Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_BGRA2GRAY)
                         
@@ -121,91 +140,162 @@ class AutoAcceptEngineService : AccessibilityService() {
         }
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        if (!isEngineRunning) return
-
-        // Target Rapido Captain app
-        val prefs = getSharedPreferences("DrClickerPrefs", Context.MODE_PRIVATE)
-        val targetPkg = prefs.getString("target_package", "com.rapido.partner")?.trim() ?: "com.rapido.partner"
-        val actualTarget = if (targetPkg.isBlank()) "com.rapido.partner" else targetPkg
-
-        val pkg = event.packageName?.toString() ?: ""
-        if (pkg == actualTarget || pkg == "com.rapido.partner" || pkg == "com.rapido.rider") {
-            val now = System.currentTimeMillis()
-            // Throttle screenshot captures to prevent freezing
-            if (now - lastScreenshotTime > 400L) {
-                lastScreenshotTime = now
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    captureAndMatchScreenshot()
-                } else {
-                    // Fallback to text matching on older SDKs
-                    performNodeFallbackMatch()
-                }
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val action = intent?.action
+        if (action == "START_PROJECTION") {
+            val resultCode = intent.getIntExtra("resultCode", -1)
+            val projectionIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra("projectionIntent", Intent::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra("projectionIntent")
             }
+            if (resultCode != -1 && projectionIntent != null) {
+                startProjection(resultCode, projectionIntent)
+            }
+        } else if (action == "STOP_PROJECTION") {
+            stopProjection()
+        }
+        return START_STICKY
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Dr. Clicker Service Channel",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.R)
-    private fun captureAndMatchScreenshot() {
-        try {
-            takeScreenshot(
-                Display.DEFAULT_DISPLAY,
-                mainExecutor,
-                object : TakeScreenshotCallback {
-                    override fun onSuccess(screenshotResult: ScreenshotResult) {
-                        executorService.submit {
-                            processScreenshot(screenshotResult)
+    private fun createNotification(): Notification {
+        createNotificationChannel()
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+        } else {
+            Notification.Builder(this)
+        }
+        return builder
+            .setContentTitle("Dr. Clicker Calibration Active")
+            .setContentText("Real-time low-latency local mirroring session active")
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .build()
+    }
+
+    private fun startProjection(resultCode: Int, data: Intent) {
+        val notification = createNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+
+        val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
+
+        projectionThread = android.os.HandlerThread("ProjectionThread").apply { start() }
+        projectionHandler = Handler(projectionThread!!.looper)
+
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val width: Int
+        val height: Int
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = windowManager.maximumWindowMetrics.bounds
+            width = bounds.width()
+            height = bounds.height()
+        } else {
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+            width = metrics.widthPixels
+            height = metrics.heightPixels
+        }
+        val dpi = resources.displayMetrics.densityDpi
+
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        imageReader?.setOnImageAvailableListener({ reader ->
+            if (!isEngineRunning) return@setOnImageAvailableListener
+            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+            try {
+                val now = System.currentTimeMillis()
+                if (now - lastScreenshotTime > 400L) {
+                    lastScreenshotTime = now
+
+                    val planes = image.planes
+                    val buffer = planes[0].buffer
+                    val pixelStride = planes[0].pixelStride
+                    val rowStride = planes[0].rowStride
+                    val rowPadding = rowStride - pixelStride * width
+
+                    val rawBitmap = Bitmap.createBitmap(
+                        width + rowPadding / pixelStride,
+                        height,
+                        Bitmap.Config.ARGB_8888
+                    )
+                    rawBitmap.copyPixelsFromBuffer(buffer)
+
+                    val softwareBitmap = if (rowPadding > 0) {
+                        val cropped = Bitmap.createBitmap(rawBitmap, 0, 0, width, height)
+                        rawBitmap.recycle()
+                        cropped
+                    } else {
+                        rawBitmap
+                    }
+
+                    executorService.submit {
+                        try {
+                            processSoftwareBitmapFrame(softwareBitmap)
+                        } finally {
+                            softwareBitmap.recycle()
                         }
                     }
-
-                    override fun onFailure(errorCode: Int) {
-                        Log.e("AutoAcceptEngine", "takeScreenshot failed: $errorCode")
-                        statusListener?.onStatusUpdated("Capture Error", true)
-                        // Trigger safety reset on hardware capture failures
-                        triggerMultiTouchReset()
-                    }
                 }
-            )
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                image.close()
+            }
+        }, projectionHandler)
+
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
+            "DrClickerMirror",
+            width,
+            height,
+            dpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            imageReader?.surface,
+            null,
+            projectionHandler
+        )
+
+        isEngineRunning = true
+        consecutiveMatchEventsCount = 0
+        loadTemplate()
+        statusListener?.onStatusUpdated("Scanning...", true)
     }
 
-    @RequiresApi(Build.VERSION_CODES.R)
-    private fun processScreenshot(screenshotResult: ScreenshotResult) {
+    private fun processSoftwareBitmapFrame(bitmap: Bitmap) {
         val currentTemplate = templateMat
         if (currentTemplate == null) {
-            // No template loaded. Attempt node-based match
-            Handler(Looper.getMainLooper()).post {
-                val found = performNodeFallbackMatch()
-                if (!found) {
-                    statusListener?.onStatusUpdated("No Template Loaded", true)
-                }
-            }
+            statusListener?.onStatusUpdated("No Template Loaded", true)
             return
         }
 
         try {
-            // BITMAP MEMORY FIX: Copy Hardware-backed bitmap to Software configuration
-            val hardwareBitmap = Bitmap.wrapHardwareBuffer(
-                screenshotResult.hardwareBuffer,
-                screenshotResult.colorSpace
-            ) ?: return
-
-            val softwareBitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
-            
             val screenMat = Mat()
-            Utils.bitmapToMat(softwareBitmap, screenMat)
-            
-            hardwareBitmap.recycle()
-            softwareBitmap.recycle()
+            Utils.bitmapToMat(bitmap, screenMat)
 
-            // Grayscale screenMat
             val grayScreenMat = Mat()
             Imgproc.cvtColor(screenMat, grayScreenMat, Imgproc.COLOR_RGBA2GRAY)
             screenMat.release()
 
-            // Execute pattern template matching
             val resultMat = Mat()
             Imgproc.matchTemplate(grayScreenMat, currentTemplate, resultMat, Imgproc.TM_CCOEFF_NORMED)
             grayScreenMat.release()
@@ -216,65 +306,123 @@ class AutoAcceptEngineService : AccessibilityService() {
             val correlationScore = minMaxLocResult.maxVal
             val matchLoc = minMaxLocResult.maxLoc
 
-            Log.d("AutoAcceptEngine", "Correlation Score: $correlationScore")
+            Log.d("AutoAcceptEngine", "MediaProjection correlation score: $correlationScore")
 
             if (correlationScore >= 0.85) {
-                // Read & parse workflow details from UI node trees
-                var meetsCriteria = true
-                val handler = Handler(Looper.getMainLooper())
-                handler.post {
+                consecutiveMatchEventsCount++
+                if (consecutiveMatchEventsCount >= 3) {
+                    Log.w("AutoAcceptEngine", "Consecutive match count limit hit. Issuing multi-touch pointer reset.")
+                    triggerMultiTouchReset()
+                    consecutiveMatchEventsCount = 0
+                }
+
+                Handler(Looper.getMainLooper()).post {
                     val details = extractWorkflowDetails()
-                    meetsCriteria = matchesFilters(details)
-                    
+                    val meetsCriteria = matchesFilters(details)
+
                     if (meetsCriteria) {
-                        // Increment match events
-                        consecutiveMatchEventsCount++
-                        if (consecutiveMatchEventsCount >= 3) {
-                            Log.w("AutoAcceptEngine", "Idle match limit hit. Dispatching dual reset.")
-                            triggerMultiTouchReset()
-                            consecutiveMatchEventsCount = 0
-                        }
-
-                        // Read preferences for humanization
-                        val prefs = getSharedPreferences("DrClickerPrefs", Context.MODE_PRIVATE)
-                        val useHumanCoords = prefs.getBoolean("human_coordinates", true)
-                        val useHumanDelays = prefs.getBoolean("human_delays", true)
-
-                        val clickX: Float
-                        val clickY: Float
-                        if (useHumanCoords) {
-                            val safeWidthMin = (currentTemplate.cols() * 0.25).toInt()
-                            val safeWidthMax = (currentTemplate.cols() * 0.75).toInt()
-                            val safeHeightMin = (currentTemplate.rows() * 0.25).toInt()
-                            val safeHeightMax = (currentTemplate.rows() * 0.75).toInt()
-                            clickX = (matchLoc.x + Random.nextInt(safeWidthMin, safeWidthMax)).toFloat()
-                            clickY = (matchLoc.y + Random.nextInt(safeHeightMin, safeHeightMax)).toFloat()
-                        } else {
-                            clickX = (matchLoc.x + currentTemplate.cols() / 2f).toFloat()
-                            clickY = (matchLoc.y + currentTemplate.rows() / 2f).toFloat()
-                        }
-
-                        val reflexDelay = if (useHumanDelays) Random.nextLong(10L, 100L) else 0L
-                        statusListener?.onStatusUpdated("Accepting (Delay: ${reflexDelay}ms)", true)
-
-                        if (reflexDelay > 0) {
-                            handler.postDelayed({
-                                performClickGesture(clickX, clickY)
-                            }, reflexDelay)
-                        } else {
-                            performClickGesture(clickX, clickY)
-                        }
+                        dispatchHumanizedClick(matchLoc, currentTemplate.cols(), currentTemplate.rows())
                     } else {
                         statusListener?.onStatusUpdated("Filtered out", true)
                     }
                 }
             } else {
+                consecutiveMatchEventsCount = 0
                 statusListener?.onStatusUpdated("Scanning...", true)
             }
         } catch (e: Exception) {
             e.printStackTrace()
             statusListener?.onStatusUpdated("CV Processing Error", true)
         }
+    }
+
+    private fun dispatchHumanizedClick(matchLoc: Point, templateCols: Int, templateRows: Int) {
+        val prefs = getSharedPreferences("DrClickerPrefs", Context.MODE_PRIVATE)
+        val useHumanCoords = prefs.getBoolean("human_coordinates", true)
+        val useHumanDelays = prefs.getBoolean("human_delays", true)
+
+        val finalClickX: Float
+        val finalClickY: Float
+
+        if (useHumanCoords) {
+            val safeWidthMin = (templateCols * 0.25).toInt()
+            val safeWidthMax = (templateCols * 0.75).toInt()
+            val safeHeightMin = (templateRows * 0.25).toInt()
+            val safeHeightMax = (templateRows * 0.75).toInt()
+
+            val randomX = matchLoc.x + if (safeWidthMax > safeWidthMin) Random.nextInt(safeWidthMin, safeWidthMax) else safeWidthMin
+            val randomY = matchLoc.y + if (safeHeightMax > safeHeightMin) Random.nextInt(safeHeightMin, safeHeightMax) else safeHeightMin
+
+            finalClickX = randomX.toFloat()
+            finalClickY = randomY.toFloat()
+        } else {
+            finalClickX = (matchLoc.x + templateCols / 2f).toFloat()
+            finalClickY = (matchLoc.y + templateRows / 2f).toFloat()
+        }
+
+        val reflexDelay = if (useHumanDelays) Random.nextLong(10L, 101L) else 0L
+        statusListener?.onStatusUpdated("Accepting (Delay: ${reflexDelay}ms)", true)
+
+        val clickRunnable = Runnable {
+            val path = Path()
+            path.moveTo(finalClickX, finalClickY)
+            path.lineTo(finalClickX, finalClickY + 1f)
+
+            val duration = ViewConfiguration.getTapTimeout().toLong()
+            val stroke = GestureDescription.StrokeDescription(path, 0L, duration)
+
+            val gestureBuilder = GestureDescription.Builder()
+            gestureBuilder.addStroke(stroke)
+
+            dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription) {
+                    super.onCompleted(gestureDescription)
+                    statusListener?.onStatusUpdated("Accept Click Sent!", true)
+                    playDualBeep()
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription) {
+                    super.onCancelled(gestureDescription)
+                    statusListener?.onStatusUpdated("Click Cancelled", true)
+                    triggerMultiTouchReset()
+                }
+            }, null)
+        }
+
+        if (reflexDelay > 0) {
+            Handler(Looper.getMainLooper()).postDelayed(clickRunnable, reflexDelay)
+        } else {
+            Handler(Looper.getMainLooper()).post(clickRunnable)
+        }
+    }
+
+    private fun stopProjection() {
+        isEngineRunning = false
+        consecutiveMatchEventsCount = 0
+
+        try {
+            virtualDisplay?.release()
+            virtualDisplay = null
+
+            imageReader?.close()
+            imageReader = null
+
+            mediaProjection?.stop()
+            mediaProjection = null
+
+            projectionThread?.quitSafely()
+            projectionThread = null
+            projectionHandler = null
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        stopForeground(true)
+        statusListener?.onStatusUpdated("Engine Idled", false)
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        // Accessibility event fallback is unused when MediaProjection is active
     }
 
     private fun extractWorkflowDetails(): RideDetails {
@@ -297,13 +445,11 @@ class AutoAcceptEngineService : AccessibilityService() {
 
     private fun parseTextForRideDetails(text: String, details: RideDetails) {
         try {
-            // Detect Pricing (₹ or Rs)
             val priceMatch = Regex("₹\\s*(\\d+)").find(text) ?: Regex("(\\d+)\\s*Rs").find(text)
             if (priceMatch != null) {
                 details.price = priceMatch.groupValues[1].toIntOrNull()
             }
 
-            // Detect Distances
             val kmMatches = Regex("(\\d+(?:\\.\\d+)?)\\s*km", RegexOption.IGNORE_CASE).findAll(text)
             for (match in kmMatches) {
                 val valFloat = match.groupValues[1].toFloatOrNull() ?: continue
@@ -356,89 +502,6 @@ class AutoAcceptEngineService : AccessibilityService() {
         return true
     }
 
-    private fun performNodeFallbackMatch(): Boolean {
-        val root = rootInActiveWindow ?: return false
-        val nodes = root.findAccessibilityNodeInfosByText("Accept")
-        if (nodes != null && nodes.isNotEmpty()) {
-            for (node in nodes) {
-                if (node.isVisibleToUser) {
-                    val rect = android.graphics.Rect()
-                    node.getBoundsInScreen(rect)
-                    val width = rect.width()
-                    val height = rect.height()
-                    if (width > 0 && height > 0) {
-                        // Read preferences for humanization
-                        val prefs = getSharedPreferences("DrClickerPrefs", Context.MODE_PRIVATE)
-                        val useHumanCoords = prefs.getBoolean("human_coordinates", true)
-                        val useHumanDelays = prefs.getBoolean("human_delays", true)
-
-                        val clickX: Float
-                        val clickY: Float
-                        if (useHumanCoords) {
-                            val insetX = (width * 0.25).toInt()
-                            val insetY = (height * 0.25).toInt()
-                            val randomOffsetX = if (insetX > 0) Random.nextInt(-insetX, insetX) else 0
-                            val randomOffsetY = if (insetY > 0) Random.nextInt(-insetY, insetY) else 0
-                            clickX = rect.centerX().toFloat() + randomOffsetX
-                            clickY = rect.centerY().toFloat() + randomOffsetY
-                        } else {
-                            clickX = rect.centerX().toFloat()
-                            clickY = rect.centerY().toFloat()
-                        }
-
-                        val reflexDelay = if (useHumanDelays) Random.nextLong(10L, 100L) else 0L
-                        statusListener?.onStatusUpdated("Accepting (Delay: ${reflexDelay}ms)", true)
-
-                        if (reflexDelay > 0) {
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                performClickGesture(clickX, clickY)
-                            }, reflexDelay)
-                        } else {
-                            performClickGesture(clickX, clickY)
-                        }
-                        return true
-                    } else if (node.isClickable) {
-                        node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        statusListener?.onStatusUpdated("Accept Sent (Text Fallback)", true)
-                        playDualBeep()
-                        return true
-                    }
-                }
-            }
-        }
-        return false
-    }
-
-    // CLICK FIX & PATH CONSTRUCTION
-    private fun performClickGesture(x: Float, y: Float) {
-        val path = Path()
-        path.moveTo(x, y)
-        // Add a microscopic 1-pixel line shift to formulate a valid vector
-        path.lineTo(x, y + 1f)
-
-        val duration = ViewConfiguration.getTapTimeout().toLong()
-        val stroke = GestureDescription.StrokeDescription(path, 0L, duration)
-        
-        val gestureBuilder = GestureDescription.Builder()
-        gestureBuilder.addStroke(stroke)
-
-        dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription) {
-                super.onCompleted(gestureDescription)
-                statusListener?.onStatusUpdated("Accept Click Sent!", true)
-                playDualBeep()
-            }
-
-            override fun onCancelled(gestureDescription: GestureDescription) {
-                super.onCancelled(gestureDescription)
-                statusListener?.onStatusUpdated("Click Cancelled", true)
-                // STUCK POINTER WORKAROUND: Trigger immediate reset on failure/cancel
-                triggerMultiTouchReset()
-            }
-        }, null)
-    }
-
-    // STUCK POINTER FIX: Programmatic asynchronous multi-touch reset gesture
     private fun triggerMultiTouchReset() {
         Log.d("AutoAcceptEngine", "Executing Android 15 touch reset queue sequence...")
         val path1 = Path().apply {
@@ -478,6 +541,7 @@ class AutoAcceptEngineService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        stopProjection()
         instance = null
         statusListener = null
         templateMat?.release()

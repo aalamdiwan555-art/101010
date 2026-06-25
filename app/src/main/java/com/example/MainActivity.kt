@@ -54,17 +54,55 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: android.content.SharedPreferences
 
-    private val switchListener: CompoundButton.OnCheckedChangeListener = CompoundButton.OnCheckedChangeListener { _, isChecked ->
+    private val overlayPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { _ ->
+        if (Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Overlay permission granted!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val mediaProjectionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            startEngine(result.resultCode, result.data!!)
+        } else {
+            revertSwitch(false)
+            Toast.makeText(this, "Screen capture consent denied.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val switchListener = CompoundButton.OnCheckedChangeListener { _, isChecked ->
         if (isChecked) {
+            // Check A: Accessibility check
             val hasAccessibility = isAccessibilityServiceEnabled()
-            val hasOverlay = Settings.canDrawOverlays(this)
-            
-            if (hasAccessibility && hasOverlay) {
-                startEngine()
-            } else {
+            if (!hasAccessibility) {
+                Toast.makeText(this, "Please enable Dr. Clicker in Accessibility Settings", Toast.LENGTH_LONG).show()
                 revertSwitch(false)
-                Toast.makeText(this, "Please enable all required system permissions first.", Toast.LENGTH_LONG).show()
+                openAccessibilitySettings()
+                return@OnCheckedChangeListener
             }
+
+            // Check B: Overlay check
+            val hasOverlay = Settings.canDrawOverlays(this)
+            if (!hasOverlay) {
+                Toast.makeText(this, "Please grant overlay permission", Toast.LENGTH_SHORT).show()
+                revertSwitch(false)
+                // Save pending toggle state
+                prefs.edit().putBoolean("pending_toggle_state", true).apply()
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+                overlayPermissionLauncher.launch(intent)
+                return@OnCheckedChangeListener
+            }
+
+            // Check C: MediaProjection Consent Check
+            val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+            val captureIntent = mediaProjectionManager.createScreenCaptureIntent()
+            mediaProjectionLauncher.launch(captureIntent)
         } else {
             stopEngine()
         }
@@ -178,6 +216,17 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updatePermissionStatus()
+        
+        // Handle pending overlay permission granted state to resume Check C flow
+        if (prefs.getBoolean("pending_toggle_state", false)) {
+            prefs.edit().putBoolean("pending_toggle_state", false).apply()
+            if (Settings.canDrawOverlays(this)) {
+                val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+                val captureIntent = mediaProjectionManager.createScreenCaptureIntent()
+                mediaProjectionLauncher.launch(captureIntent)
+            }
+        }
+
         // Refresh toggle state in case the engine was turned off externally
         val isActive = AutoAcceptEngineService.instance?.isEngineRunning() == true
         switchEngine.setOnCheckedChangeListener(null)
@@ -216,14 +265,23 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    private fun startEngine() {
+    private fun startEngine(resultCode: Int, projectionIntent: Intent) {
         prefs.edit().putBoolean("engine_active", true).apply()
         
         // Start floating overlay
         startService(Intent(this, FloatingOverlayService::class.java))
         
-        // Activate system engine context
-        AutoAcceptEngineService.instance?.setEngineActive(true)
+        // Start accessibility service with MediaProjection payload parameters to invoke foreground type session
+        val serviceIntent = Intent(this, AutoAcceptEngineService::class.java).apply {
+            action = "START_PROJECTION"
+            putExtra("resultCode", resultCode)
+            putExtra("projectionIntent", projectionIntent)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
         updateStatusText(true)
     }
 
@@ -233,8 +291,11 @@ class MainActivity : AppCompatActivity() {
         // Stop floating overlay
         stopService(Intent(this, FloatingOverlayService::class.java))
         
-        // Deactivate system engine context
-        AutoAcceptEngineService.instance?.setEngineActive(false)
+        // Signal accessibility service to safely release projection session resources
+        val serviceIntent = Intent(this, AutoAcceptEngineService::class.java).apply {
+            action = "STOP_PROJECTION"
+        }
+        startService(serviceIntent)
         updateStatusText(false)
     }
 
@@ -370,17 +431,15 @@ class MainActivity : AppCompatActivity() {
             btnGrantOverlay.setTextColor(Color.parseColor("#121212"))
         }
 
-        // Only allow enabling the engine if both permissions are granted
-        if (hasAccessibility && hasOverlay) {
-            switchEngine.isEnabled = true
-        } else {
+        // Keep engine switch always interactive so clicking it performs the required ordered check sequence
+        switchEngine.isEnabled = true
+        if (!hasAccessibility || !hasOverlay) {
             if (switchEngine.isChecked) {
                 stopEngine()
                 switchEngine.setOnCheckedChangeListener(null)
                 switchEngine.isChecked = false
                 switchEngine.setOnCheckedChangeListener(switchListener)
             }
-            switchEngine.isEnabled = false
         }
     }
 
