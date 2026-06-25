@@ -323,6 +323,9 @@ class AutoAcceptEngineService : AccessibilityService() {
 
     private fun matchesFilters(details: RideDetails): Boolean {
         val prefs = getSharedPreferences("DrClickerPrefs", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("accept_all_rides", false)) {
+            return true
+        }
         val minPriceStr = prefs.getString("min_price", "") ?: ""
         val maxPriceStr = prefs.getString("max_price", "") ?: ""
         val minPickupStr = prefs.getString("min_pickup", "") ?: ""

@@ -49,6 +49,7 @@ class MainActivity : AppCompatActivity() {
     // Humanized Clicking switches
     private lateinit var switchHumanCoordinates: SwitchCompat
     private lateinit var switchHumanDelays: SwitchCompat
+    private lateinit var switchAcceptAllRides: SwitchCompat
 
     private lateinit var prefs: android.content.SharedPreferences
 
@@ -121,6 +122,7 @@ class MainActivity : AppCompatActivity() {
         // Bind humanized click switches
         switchHumanCoordinates = findViewById(R.id.switch_human_coordinates)
         switchHumanDelays = findViewById(R.id.switch_human_delays)
+        switchAcceptAllRides = findViewById(R.id.switch_accept_all_rides)
 
         // Setup permission configure clicks
         btnGrantAccessibility.setOnClickListener {
@@ -141,6 +143,9 @@ class MainActivity : AppCompatActivity() {
         }
         switchHumanDelays.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean("human_delays", isChecked).apply()
+        }
+        switchAcceptAllRides.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean("accept_all_rides", isChecked).apply()
         }
 
         // Load saved parameter values
@@ -187,6 +192,7 @@ class MainActivity : AppCompatActivity() {
 
         switchHumanCoordinates.isChecked = prefs.getBoolean("human_coordinates", true)
         switchHumanDelays.isChecked = prefs.getBoolean("human_delays", true)
+        switchAcceptAllRides.isChecked = prefs.getBoolean("accept_all_rides", false)
     }
 
     private fun setupInputWatchers() {
@@ -257,6 +263,33 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun showAccessibilityWakeUpDialog() {
+        val dialogMessage = """
+            ⚠️ SERVICE WAKE UP REQUIRED (सर्विस रीस्टार्ट करें)
+            
+            Android system ne background optimization ke karan background accessibility service ko freeze ya pause kar diya hai. 
+            
+            Isko normal (ACTIVE) karne ke liye yeh steps follow karein:
+            
+            1. Niche "Settings Kholen" par click karein.
+            2. "Dr. Clicker" (Downloaded / Installed apps me) par click karein.
+            3. Service ko pehle OFF (बंद) karein.
+            4. Phir wapas ON (चालू) karein.
+            
+            Wapas app me aakar "Start Engine" toggle karein, app 100% chalne lagega!
+        """.trimIndent()
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Wake Up Accessibility Service")
+            .setMessage(dialogMessage)
+            .setCancelable(true)
+            .setPositiveButton("Settings Kholen") { _, _ ->
+                openAccessibilitySettings()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun openAccessibilitySettings() {
         Toast.makeText(
             this,
@@ -302,7 +335,7 @@ class MainActivity : AppCompatActivity() {
         if (hasAccessibility) {
             ivStatusAccessibility.setImageResource(android.R.drawable.presence_online)
             ivStatusAccessibility.imageTintList = ColorStateList.valueOf(Color.GREEN)
-            btnGrantAccessibility.text = "Enabled"
+            btnGrantAccessibility.text = "Active"
             btnGrantAccessibility.isEnabled = false
             btnGrantAccessibility.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#333333"))
             btnGrantAccessibility.setTextColor(Color.GRAY)
