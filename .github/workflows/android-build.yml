@@ -7,6 +7,9 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -34,8 +37,21 @@ jobs:
     - name: Build Debug APK
       run: ./gradlew assembleDebug --no-daemon
 
-    - name: Upload Debug APK
+    - name: Upload Debug APK to Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: app-debug-apk
         path: app/build/outputs/apk/debug/app-debug.apk
+
+    - name: Create Release and Upload APK
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v1.0.${{ github.run_number }}
+        name: "Dr. Clicker Build v1.0.${{ github.run_number }}"
+        draft: false
+        prerelease: false
+        files: app/build/outputs/apk/debug/app-debug.apk
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
